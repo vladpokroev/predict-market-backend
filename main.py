@@ -1,8 +1,9 @@
-from fastapi import FastAPI
-import httpx
-from pydantic import BaseModel
 import time
+
+import httpx
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 app = FastAPI()
 
@@ -13,13 +14,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-bets = []
-
 @app.get("/")
-def read_root():
+def read_root() -> dict:
     return {"messageeee": "Привет, это мой API"}
 
-def fetch_price(coin):
+def fetch_price(coin: str) -> float | None:
     url = f"https://api.binance.com/api/v3/ticker/price?symbol={coin}USDT"
     try:
         response = httpx.get(url)
@@ -37,7 +36,7 @@ def fetch_price(coin):
     return float(price)
 
 @app.get("/price/{coin}")
-def get_price(coin):
+def get_price(coin: str) -> dict:
     price = fetch_price(coin)
     if price is None:
         return {"error": f"Не удалось получить цену для {coin}"}
@@ -45,7 +44,7 @@ def get_price(coin):
 
 
 class Bet:
-    def __init__(self, coin, amount, direction, entry_price, duration):
+    def __init__(self, coin: str, amount: float, direction: str, entry_price: float, duration: int) -> None:
         self.coin = coin
         self.amount = amount
         self.direction = direction
@@ -53,10 +52,10 @@ class Bet:
         self.expires_at = time.time() + duration
         self.status = "active"
 
-    def is_expired(self):
+    def is_expired(self) -> bool:
         return time.time() >= self.expires_at
 
-    def resolve(self, exit_price):
+    def resolve(self, exit_price: float) -> str:
         if self.direction == "up":
             won = exit_price > self.entry_price
         else:
@@ -68,6 +67,7 @@ class Bet:
             self.status = "lose"
         return self.status
 
+bets: list[Bet] = []
 
 class BetRequest(BaseModel):
     coin: str
@@ -76,7 +76,7 @@ class BetRequest(BaseModel):
     duration: int
 
 @app.post("/bet")
-def create_bet(request: BetRequest):
+def create_bet(request: BetRequest) -> dict:
     entry_price = fetch_price(request.coin)
     if entry_price is None:
         return {"error": f"Не удалось получить цену для {request.coin}"}
@@ -100,7 +100,7 @@ def create_bet(request: BetRequest):
 
 
 @app.get("/bets")
-def get_bets():
+def get_bets() -> list[dict]:
     result = []
     for bet in bets:
         result.append({
@@ -113,7 +113,7 @@ def get_bets():
     return result
 
 @app.get("/bet/{bet_id}/result")
-def get_result(bet_id: int):
+def get_result(bet_id: int) -> dict:
     if bet_id < 0 or bet_id >= len(bets):
         return {"error": "Ставка не найдена"}
 
