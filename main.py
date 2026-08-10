@@ -1,9 +1,10 @@
 import time
+from enum import StrEnum
 
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from settings import settings
 
@@ -47,9 +48,20 @@ def get_price(coin: str) -> dict:
         return {"error": f"Не удалось получить цену для {coin}"}
     return {"coin": coin, "price": price}
 
+class Direction(StrEnum):
+    UP = "up"
+    DOWN = "down"
+
 
 class Bet:
-    def __init__(self, coin: str, amount: float, direction: str, entry_price: float, duration: int) -> None:
+    def __init__(
+        self,
+        coin: str,
+        amount: float,
+        direction: Direction,
+        entry_price: float,
+        duration: int,
+    ) -> None:
         self.coin = coin
         self.amount = amount
         self.direction = direction
@@ -61,7 +73,7 @@ class Bet:
         return time.time() >= self.expires_at
 
     def resolve(self, exit_price: float) -> str:
-        if self.direction == "up":
+        if self.direction == Direction.UP:
             won = exit_price > self.entry_price
         else:
             won = exit_price < self.entry_price
@@ -70,15 +82,25 @@ class Bet:
             self.status = "win"
         else:
             self.status = "lose"
+
         return self.status
 
 bets: list[Bet] = []
 
+
 class BetRequest(BaseModel):
-    coin: str
-    amount: float
-    direction: str
-    duration: int
+    coin: str = Field(min_length=1)
+    amount: float = Field(gt=0)
+    direction: Direction
+    duration: int = Field(gt=0)
+
+    @field_validator("coin", mode="before")
+    @classmethod
+    def normalize_coin(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().upper()
+        return value
+
 
 @app.post("/bet")
 def create_bet(request: BetRequest) -> dict:
