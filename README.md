@@ -11,8 +11,12 @@ API для ставок на изменение курса криптовалю�
 
 ## Установка
 
+Создать и активировать виртуальное окружение, установить зависимости:
+
 ```bash
-pip3 install fastapi uvicorn httpx
+python3 -m venv .venv
+source .venv/bin/activate
+pip3 install -r requirements.txt
 ```
 
 ## Запуск
