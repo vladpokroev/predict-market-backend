@@ -5,11 +5,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from settings import settings
+
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[settings.frontend_origin],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -19,7 +21,10 @@ def read_root() -> dict:
     return {"messageeee": "Привет, это мой API"}
 
 def fetch_price(coin: str) -> float | None:
-    url = f"https://api.binance.com/api/v3/ticker/price?symbol={coin}USDT"
+    url = (
+        f"{settings.binance_base_url}/api/v3/ticker/price"
+        f"?symbol={coin}USDT"
+    )
     try:
         response = httpx.get(url)
     except httpx.RequestError:
