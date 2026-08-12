@@ -1,13 +1,20 @@
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from enum import StrEnum
 
 import httpx
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, field_validator
 
+from enums import Direction, ErrorCode
+from schema import (
+    ActiveBetResultResponse,
+    BetListResponse,
+    BetRequest,
+    BetResponse,
+    PriceResponse,
+    ResolvedBetResultResponse,
+)
 from settings import settings
 
 app = FastAPI()
@@ -39,8 +46,8 @@ def handle_price_errors() -> Iterator[None]:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
-                "code": "coin_not_found",
-                "message": f"Монета {exc} не найдена",
+                "code": ErrorCode.COIN_NOT_FOUND,
+                "message": f"Coin {exc} not found",
             },
         ) from exc
 
@@ -48,7 +55,7 @@ def handle_price_errors() -> Iterator[None]:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={
-                "code": "price_service_error",
+                "code": ErrorCode.PRICE_SERVICE_ERROR,
                 "message": str(exc),
             },
         ) from exc
@@ -64,32 +71,26 @@ def fetch_price(coin: str) -> float:
     try:
         response = httpx.get(url)
     except httpx.RequestError as exc:
-        raise PriceServiceError("Не удалось подключиться к Binance") from exc
+        raise PriceServiceError("Failed to connect to Binance") from exc
 
     if response.status_code == 400:
         raise CoinNotFoundError(coin)
 
     if response.status_code != 200:
         raise PriceServiceError(
-            f"Binance вернул статус {response.status_code}"
+            f"Binance returned status {response.status_code}"
         )
 
     data = response.json()
     price = data.get("price")
 
     if price is None:
-        raise PriceServiceError("Binance не вернул цену")
+        raise PriceServiceError("Binance did not return a price")
 
     return float(price)
 
 
-class PriceResponse(BaseModel):
-    coin: str
-    price: float
 
-class ActiveBetResultResponse(BaseModel):
-    status: str
-    message: str
 
 @app.get("/price/{coin}", response_model=PriceResponse)
 def get_price(coin: str) -> dict:
@@ -100,16 +101,6 @@ def get_price(coin: str) -> dict:
 
     return {"coin": coin, "price": price}
 
-class Direction(StrEnum):
-    UP = "up"
-    DOWN = "down"
-
-class ResolvedBetResultResponse(BaseModel):
-    coin: str
-    direction: Direction
-    entry_price: float
-    exit_price: float
-    status: str
 
 class Bet:
     def __init__(
@@ -146,34 +137,6 @@ class Bet:
 bets: list[Bet] = []
 
 
-class BetRequest(BaseModel):
-    coin: str = Field(min_length=1)
-    amount: float = Field(gt=0)
-    direction: Direction
-    duration: int = Field(gt=0)
-
-    @field_validator("coin", mode="before")
-    @classmethod
-    def normalize_coin(cls, value: object) -> object:
-        if isinstance(value, str):
-            return value.strip().upper()
-        return value
-
-
-class BetResponse(BaseModel):
-    message: str
-    coin: str
-    entry_price: float
-    direction: Direction
-    expires_at: float
-
-
-class BetListResponse(BaseModel):
-    coin: str
-    amount: float
-    direction: Direction
-    entry_price: float
-    status: str
 
 @app.post(
     "/bet",
@@ -222,7 +185,10 @@ def get_result(bet_id: int) -> dict:
     if bet_id < 0 or bet_id >= len(bets):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Ставка не найдена",
+            detail={
+                "code": ErrorCode.BET_NOT_FOUND,
+                "message": "Bet not found",
+            },
         )
 
     bet = bets[bet_id]
