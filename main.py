@@ -1,11 +1,20 @@
 import time
-from enum import StrEnum
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, field_validator
 
+from enums import BetStatus, Direction, ErrorCode
+from schema import (
+    ActiveBetResultResponse,
+    BetListResponse,
+    BetRequest,
+    BetResponse,
+    PriceResponse,
+    ResolvedBetResultResponse,
+)
 from settings import settings
 
 app = FastAPI()
@@ -21,36 +30,119 @@ app.add_middleware(
 def read_root() -> dict:
     return {"messageeee": "Привет, это мой API"}
 
-def fetch_price(coin: str) -> float | None:
+class CoinNotFoundError(Exception):
+    pass
+
+
+class PriceServiceError(Exception):
+    pass
+
+
+class BetNotExpiredError(Exception):
+    pass
+
+@contextmanager
+def handle_price_errors() -> Iterator[None]:
+    try:
+        yield
+
+    except CoinNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": ErrorCode.COIN_NOT_FOUND,
+                "message": f"Coin {exc} not found",
+            },
+        ) from exc
+
+    except PriceServiceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "code": ErrorCode.PRICE_SERVICE_ERROR,
+                "message": str(exc),
+            },
+        ) from exc
+
+def fetch_price(coin: str) -> float:
+    coin = coin.strip().upper()
+
     url = (
         f"{settings.binance_base_url}/api/v3/ticker/price"
         f"?symbol={coin}USDT"
     )
+
     try:
         response = httpx.get(url)
-    except httpx.RequestError:
-        return None
+    except httpx.RequestError as exc:
+        raise PriceServiceError("Failed to connect to Binance") from exc
+
+    if response.status_code == 400:
+        raise CoinNotFoundError(coin)
 
     if response.status_code != 200:
-        return None
+        raise PriceServiceError(
+            f"Binance returned status {response.status_code}"
+        )
 
     data = response.json()
     price = data.get("price")
+
     if price is None:
-        return None
+        raise PriceServiceError("Binance did not return a price")
 
     return float(price)
 
-@app.get("/price/{coin}")
-def get_price(coin: str) -> dict:
-    price = fetch_price(coin)
-    if price is None:
-        return {"error": f"Не удалось получить цену для {coin}"}
-    return {"coin": coin, "price": price}
+def fetch_historical_price(coin: str, timestamp: float) -> float:
+    coin = coin.strip().upper()
+    timestamp_ms = int(timestamp * 1000)
 
-class Direction(StrEnum):
-    UP = "up"
-    DOWN = "down"
+    url = f"{settings.binance_base_url}/api/v3/aggTrades"
+
+    params: dict[str, str | int] = {
+        "symbol": f"{coin}USDT",
+        "endTime": timestamp_ms,
+        "limit": 1,
+    }
+
+    try:
+        response = httpx.get(url, params=params)
+    except httpx.RequestError as exc:
+        raise PriceServiceError("Failed to connect to Binance") from exc
+
+    if response.status_code == 400:
+        raise CoinNotFoundError(coin)
+
+    if response.status_code != 200:
+        raise PriceServiceError(
+            f"Binance returned status {response.status_code}"
+        )
+
+    data = response.json()
+
+    if not data:
+        raise PriceServiceError(
+            f"Binance did not return historical trades for {coin}"
+        )
+
+    price = data[0].get("p")
+
+    if price is None:
+        raise PriceServiceError(
+            "Binance did not return a historical price"
+        )
+
+    return float(price)
+
+
+@app.get("/price/{coin}", response_model=PriceResponse)
+def get_price(coin: str) -> dict:
+    coin = coin.strip().upper()
+
+    with handle_price_errors():
+        price = fetch_price(coin)
+
+    return {"coin": coin, "price": price}
 
 
 class Bet:
@@ -60,53 +152,50 @@ class Bet:
         amount: float,
         direction: Direction,
         entry_price: float,
-        duration: int,
+        duration: int
     ) -> None:
         self.coin = coin
         self.amount = amount
         self.direction = direction
         self.entry_price = entry_price
         self.expires_at = time.time() + duration
-        self.status = "active"
+        self.status = BetStatus.ACTIVE
+        self.exit_price: float | None = None
 
     def is_expired(self) -> bool:
         return time.time() >= self.expires_at
 
-    def resolve(self, exit_price: float) -> str:
-        if self.direction == Direction.UP:
-            won = exit_price > self.entry_price
-        else:
-            won = exit_price < self.entry_price
+    def resolve(self, exit_price: float) -> BetStatus:
+        if not self.is_expired():
+            raise BetNotExpiredError("Bet has not expired yet")
 
-        if won:
-            self.status = "win"
-        else:
-            self.status = "lose"
+        if self.exit_price is None:
+            self.exit_price = exit_price
+            if self.direction == Direction.UP:
+                won = exit_price > self.entry_price
+            else:
+                won = exit_price < self.entry_price
+
+            if won:
+                self.status = BetStatus.WIN
+            else:
+                self.status = BetStatus.LOSE
 
         return self.status
+
 
 bets: list[Bet] = []
 
 
-class BetRequest(BaseModel):
-    coin: str = Field(min_length=1)
-    amount: float = Field(gt=0)
-    direction: Direction
-    duration: int = Field(gt=0)
 
-    @field_validator("coin", mode="before")
-    @classmethod
-    def normalize_coin(cls, value: object) -> object:
-        if isinstance(value, str):
-            return value.strip().upper()
-        return value
-
-
-@app.post("/bet")
+@app.post(
+    "/bet",
+    response_model=BetResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 def create_bet(request: BetRequest) -> dict:
-    entry_price = fetch_price(request.coin)
-    if entry_price is None:
-        return {"error": f"Не удалось получить цену для {request.coin}"}
+    with handle_price_errors():
+        entry_price = fetch_price(request.coin)
 
     bet = Bet(
         coin=request.coin,
@@ -125,8 +214,7 @@ def create_bet(request: BetRequest) -> dict:
         "expires_at": bet.expires_at,
     }
 
-
-@app.get("/bets")
+@app.get("/bets", response_model=list[BetListResponse])
 def get_bets() -> list[dict]:
     result = []
     for bet in bets:
@@ -139,19 +227,42 @@ def get_bets() -> list[dict]:
         })
     return result
 
-@app.get("/bet/{bet_id}/result")
+@app.get(
+    "/bet/{bet_id}/result",
+    response_model=ActiveBetResultResponse | ResolvedBetResultResponse,
+)
 def get_result(bet_id: int) -> dict:
     if bet_id < 0 or bet_id >= len(bets):
-        return {"error": "Ставка не найдена"}
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": ErrorCode.BET_NOT_FOUND,
+                "message": "Bet not found",
+            },
+        )
 
     bet = bets[bet_id]
 
-    if not bet.is_expired():
-        return {"status": "active", "message": "Ставка ещё не завершена"}
+    if bet.exit_price is not None:
+        return {
+            "coin": bet.coin,
+            "direction": bet.direction,
+            "entry_price": bet.entry_price,
+            "exit_price": bet.exit_price,
+            "status": bet.status,
+        }
 
-    exit_price = fetch_price(bet.coin)
-    if exit_price is None:
-        return {"error": "Не удалось получить цену для подсчёта результата"}
+    if not bet.is_expired():
+        return {
+            "status": "active",
+            "message": "Ставка ещё не завершена",
+        }
+
+    with handle_price_errors():
+        exit_price = fetch_historical_price(
+            bet.coin,
+            bet.expires_at,
+        )
 
     result = bet.resolve(exit_price)
 
@@ -159,6 +270,6 @@ def get_result(bet_id: int) -> dict:
         "coin": bet.coin,
         "direction": bet.direction,
         "entry_price": bet.entry_price,
-        "exit_price": exit_price,
+        "exit_price": bet.exit_price,
         "status": result,
     }
