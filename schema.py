@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, field_validator
 
-from enums import Direction
+from enums import BetStatus, Direction
 
 
 class PriceResponse(BaseModel):
@@ -9,7 +9,7 @@ class PriceResponse(BaseModel):
 
 
 class ActiveBetResultResponse(BaseModel):
-    status: str
+    status: BetStatus
     message: str
 
 class ResolvedBetResultResponse(BaseModel):
@@ -17,7 +17,7 @@ class ResolvedBetResultResponse(BaseModel):
     direction: Direction
     entry_price: float
     exit_price: float
-    status: str
+    status: BetStatus
 
 class BetRequest(BaseModel):
     coin: str = Field(min_length=1)
@@ -45,4 +45,4 @@ class BetListResponse(BaseModel):
     amount: float
     direction: Direction
     entry_price: float
-    status: str
+    status: BetStatus

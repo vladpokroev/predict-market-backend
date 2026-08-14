@@ -5,6 +5,11 @@ class Direction(StrEnum):
     UP = "up"
     DOWN = "down"
 
+class BetStatus(StrEnum):
+    ACTIVE = "active"
+    WIN = "win"
+    LOSE = "lose"
+
 
 class ErrorCode(IntEnum):
     COIN_NOT_FOUND = 1001
